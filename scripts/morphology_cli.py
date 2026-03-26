@@ -149,11 +149,13 @@ def main() -> None:
         print(json.dumps({"ok": False, "error": f"参数 JSON 无效: {e}"}, ensure_ascii=False), file=sys.stderr)
         sys.exit(1)
 
-    load_config()
-    with open(CONFIG_PATH, encoding="utf-8") as f:
-        token = json.load(f)["token"].strip()
+    cfg = load_config()
+    token = cfg["token"].strip()
+    verify_ssl = cfg.get("verify_ssl", True)
+    if not isinstance(verify_ssl, bool):
+        verify_ssl = True
 
-    client = HuaChuangMorphologyAPI(token)
+    client = HuaChuangMorphologyAPI(token, verify_ssl=verify_ssl)
     fn = getattr(client, method_name)
     sig = inspect.signature(fn)
     params = {k: v for k, v in kwargs.items() if k in sig.parameters}

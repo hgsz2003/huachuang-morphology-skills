@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """华创金工形态学 API 客户端（供 skill CLI 调用）。"""
+import ast
 import datetime
 import json
 import logging
-import warnings
 from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
@@ -22,13 +22,14 @@ logger = logging.getLogger(__name__)
 class HuaChuangMorphologyAPI:
     """华创金工形态学 API 客户端。"""
 
-    def __init__(self, token: str):
+    def __init__(self, token: str, verify_ssl: bool = True):
         self.token = token
         self.base_url = "https://mark.hcquant.com/all_api"
         self.timing_base_url = "https://xingtai.pro"
         self.logger = logging.getLogger(__name__)
 
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        if not verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         self.session = requests.Session()
         retry_strategy = Retry(
@@ -48,7 +49,7 @@ class HuaChuangMorphologyAPI:
                 "Connection": "keep-alive",
             }
         )
-        self.session.verify = False
+        self.session.verify = verify_ssl
 
         self.asset_codes = {
             "broad_index": [
@@ -85,6 +86,20 @@ class HuaChuangMorphologyAPI:
                 "efund": "易方达",
             },
         }
+
+    def _parse_timing_response_body(self, text: str) -> Optional[Any]:
+        if not text or not text.strip():
+            return None
+        raw = text.strip()
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+        try:
+            return ast.literal_eval(raw)
+        except (ValueError, SyntaxError, TypeError):
+            self.logger.warning("择时响应解析失败（仅接受 JSON 或 Python 字面量，已禁用 eval）")
+            return None
 
     def _parse_json_text(self, text: str) -> Union[pd.DataFrame, Dict, List, str]:
         if not text:
@@ -173,15 +188,12 @@ class HuaChuangMorphologyAPI:
         return self._make_request(f"{self.base_url}/concepttiming.php", {"token": self.token})
 
     def _fetch_timing_json(self, url: str) -> Optional[Dict[str, Any]]:
-        response = self.session.get(url)
+        response = self.session.get(url, timeout=30)
         if response.status_code != 200:
             return None
-        try:
-            data = json.loads(response.text)
-        except json.JSONDecodeError:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                data = eval(response.text)  # noqa: S307 — 与服务端历史格式兼容
+        data = self._parse_timing_response_body(response.text)
+        if data is None:
+            return None
         if isinstance(data, dict) and "betime" in data:
             time_df = pd.DataFrame(data["betime"], columns=["begindate", "enddate"])
             time_df["begindate"] = time_df["begindate"].apply(self.unix_to_date)
@@ -225,13 +237,12 @@ class HuaChuangMorphologyAPI:
             return None
 
         url = f"{self.timing_base_url}/etftiming/{asset_code}.json"
-        response = self.session.get(url)
+        response = self.session.get(url, timeout=30)
         if response.status_code != 200:
             return None
-        try:
-            data = json.loads(response.text)
-        except json.JSONDecodeError:
-            data = eval(response.text)  # noqa: S307
+        data = self._parse_timing_response_body(response.text)
+        if data is None or not isinstance(data, dict):
+            return None
 
         trade_data = pd.DataFrame(data["data"])
         trade_data.columns = [
@@ -300,8 +311,10 @@ class HuaChuangMorphologyAPI:
         return self._fetch_timing_json(f"{self.timing_base_url}/etftimingV2/{sid}.json")
 
     def get_etf_scores(self) -> Optional[pd.DataFrame]:
-        response = self.session.get(f"{self.timing_base_url}/etfv2/score_all.json")
+        response = self.session.get(f"{self.timing_base_url}/etfv2/score_all.json", timeout=30)
         if response.status_code != 200:
             return None
-        data = json.loads(response.text)
+        data = self._parse_timing_response_body(response.text)
+        if data is None:
+            return None
         return pd.DataFrame(data)
